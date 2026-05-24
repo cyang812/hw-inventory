@@ -75,7 +75,7 @@ filter, and find an individual item by any of its axes independently.
 | API client   | `openapi-typescript` (type-only `.d.ts` from OpenAPI schema) + hand-written typed `fetch` wrapper   |
 | Lint/format  | `dotnet format` + `.editorconfig` (backend); `eslint` + `prettier` (frontend)                      |
 | Tests        | **xUnit** + **`WebApplicationFactory<Program>`** (backend integration); **vitest** + `@vue/test-utils` (frontend) |
-| Container    | `docker-compose.yml` added in phase 2 for Postgres + backend + frontend                            |
+| Container    | Single multi-stage `Dockerfile` (backend + built SPA), published to **GHCR** by GitHub Actions as a multi-arch (`amd64`+`arm64`) image; used for deployment, not for day-to-day dev. See §10. |
 
 Rationale:
 - **ASP.NET Core Minimal API** gives low-ceremony endpoint definitions, first-class OpenAPI
@@ -707,3 +707,106 @@ When new features are added, update this section and §4/§7 accordingly.
 **Plan updated**
 - If the change adds or removes an endpoint, tool, entity, or verification step,
   the relevant section of this plan is updated in the same change.
+
+---
+
+## 10. Operations & data lifecycle
+
+### 10.1 Current dev workflow (no Docker)
+While the project is still under active development, work happens **directly on the dev
+machine** — no container in the loop. Docker exists only for deployment to the thin
+client / future server.
+
+```powershell
+# backend (http://127.0.0.1:5080)
+cd backend\HwInventory.Api
+dotnet run                      # normal run
+dotnet run -- --seed            # one-shot: populate demo data, then exits
+
+# frontend dev server (http://127.0.0.1:5173, proxies /api → :5080)
+cd frontend
+npm run dev
+
+# tests
+cd backend ; dotnet test
+cd frontend ; npm test ; npm run build
+```
+
+Database file lives at `backend\HwInventory.Api\hw_inventory.db` (project cwd) when
+running this way. It's git-ignored by the `*.db` rule.
+
+### 10.2 Three layers of "database state"
+
+| Concern | Where it lives | In git? |
+|---|---|---|
+| **Schema** (tables, columns, indexes) | `backend/HwInventory.Api/Data/Migrations/*.cs` (EF Core migrations) | ✅ yes |
+| **Demo / seed data** | `backend/HwInventory.Api/Seed/DemoSeeder.cs` (idempotent C# code) | ✅ yes |
+| **The actual `.db` file** | `data/hw_inventory.db` (Docker bind mount) or `backend/HwInventory.Api/hw_inventory.db` (dev) | ❌ never |
+
+Rules:
+- **Never commit a `.db` file.** It diffs poorly, would leak real inventory data, and
+  goes stale against schema changes. The seeder is the source of truth.
+- **Schema changes always happen via a new migration**
+  (`dotnet ef migrations add <Name>` in `backend/HwInventory.Api`), never by editing an
+  existing migration in-place.
+- **SQLite startup auto-migrates** (`db.Database.MigrateAsync()` in `Program.cs`). Postgres
+  does not — Postgres deployments must run `dotnet ef database update` separately.
+- **Seeder is idempotent at the coarse level** — `DemoSeeder` skips if any hardware row
+  already exists, so re-running `--seed` on a populated DB is a no-op.
+
+### 10.3 Database portability (Windows ↔ Debian, x64 ↔ arm64)
+
+The SQLite file format is byte-identical across OSes and CPU architectures, so the
+`.db` from this Windows dev box can be copied to the Debian thin client (Wyse 5070,
+amd64) or to a future arm64 server, and used as-is. No dump/restore step needed.
+
+**Move procedure (no data loss):**
+1. Stop the source app (`Ctrl-C` for `dotnet run`, or `docker compose down` on a
+   container host) so the WAL is checkpointed back into the main file.
+2. Copy the whole `data/` folder (or the `hw_inventory.db` + `hw_inventory.db-wal` +
+   `hw_inventory.db-shm` triple if the sidecars exist).
+3. Place it at the target's `data/` path.
+4. On Debian, make sure the bind-mount directory is writable by the container UID:
+   `chmod 777 data` (single-user box) or `chown 1654:1654 data` (match aspnet image).
+5. `docker compose pull && docker compose up -d`. First boot auto-applies any missing
+   migrations.
+
+**Schema-version rule:** newer image + older DB = migrations forward-fill on boot (safe).
+Older image + newer DB = queries throw on missing columns (don't do this — pull the newer
+image first).
+
+### 10.4 Backups
+
+Two patterns:
+
+- **Cold copy** (simple): stop the app, `cp -a data/ data.bak/` or zip and copy off-box.
+- **Online snapshot** (no downtime): SQLite's online backup API gives a consistent file
+  copy while the app keeps serving:
+  ```bash
+  docker compose exec app sh -c 'sqlite3 /data/hw_inventory.db ".backup /data/hw_inventory.bak"'
+  ```
+  Requires `sqlite3` in the runtime image (not installed by default; ~3 MB to add).
+
+### 10.5 Deployment path (future, when promoting to thin client / server)
+
+End-to-end loop (one-way push, no manual builds on the target):
+1. `git push` to GitHub on `main` (or tag `v*.*.*`).
+2. GitHub Actions (`.github/workflows/docker.yml`) runs the test gate, then buildx
+   publishes a multi-arch image to `ghcr.io/<owner>/hw-inventory:latest` (and `:v1.2.3`
+   for tagged releases).
+3. On the target box:
+   ```bash
+   docker compose pull
+   docker compose up -d
+   ```
+4. Health: `curl http://<host>:8080/api/health`; SPA at `http://<host>:8080/`.
+
+Compose contract (`docker-compose.yml` + `.env`):
+- One service `app`, pulled from GHCR; bind-mounts `./data:/data`; reads env from
+  `.env` (`GHCR_OWNER`, `AUTH_TOKEN`, `HOST_PORT`, `IMAGE_TAG`, `APP_ENV`,
+  `IDLE_DEFAULT_DAYS`).
+- Postgres is kept under `profiles: ["postgres"]` — opt-in via `docker compose
+  --profile postgres up -d` and a Npgsql `DATABASE_URL` in `.env`.
+
+No TLS in this iteration (LAN only); a `compose.prod.yml` overlay with Caddy can be
+added later for public deployments without changing the base image.
