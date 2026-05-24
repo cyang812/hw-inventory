@@ -66,3 +66,7 @@ docker-compose.override.yml
 
 # Attachments storage (local backend)
 attachments/
+
+# Local DB snapshots (real inventory data; never commit)
+backups/
+
