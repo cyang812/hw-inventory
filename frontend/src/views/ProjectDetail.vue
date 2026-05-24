@@ -1,15 +1,20 @@
 <script setup lang="ts">
-import { onMounted } from 'vue';
+import { computed, onMounted, ref } from 'vue';
 import { useRoute, RouterLink } from 'vue-router';
-import { NCard, NSpace, NTag, NDescriptions, NDescriptionsItem, NList, NListItem, NSelect, NButton, useMessage } from 'naive-ui';
+import {
+  NCard, NSpace, NTag, NDescriptions, NDescriptionsItem, NList, NListItem,
+  NButton, useMessage,
+} from 'naive-ui';
 import { useProjectsStore } from '../stores/projects';
+import { formatDate, diffDays } from '../utils/dates';
+import ProjectScheduleDrawer from './timeline/ProjectScheduleDrawer.vue';
 
 const route = useRoute();
 const projects = useProjectsStore();
 const message = useMessage();
 const id = Number(route.params.id);
 
-const statusOptions = ['idea', 'planned', 'inProgress', 'paused', 'done', 'abandoned'].map((s) => ({ label: s, value: s }));
+const showDrawer = ref(false);
 
 onMounted(async () => {
   try {
@@ -20,10 +25,15 @@ onMounted(async () => {
   }
 });
 
-async function changeStatus(newStatus: string) {
-  await projects.patch(id, [{ op: 'replace', path: '/status', value: newStatus }]);
-  message.success(`Status → ${newStatus}`);
-}
+const duration = computed(() => {
+  const d = projects.detail;
+  if (!d?.startedAt) return null;
+  const end = d.completedAt ?? new Date().toISOString();
+  const days = diffDays(d.startedAt, end);
+  if (days == null) return null;
+  const suffix = d.completedAt ? '' : ' (so far)';
+  return `${days} day${days === 1 ? '' : 's'}${suffix}`;
+});
 </script>
 
 <template>
@@ -35,9 +45,20 @@ async function changeStatus(newStatus: string) {
         <NTag v-if="projects.detail.archivedAt" type="warning">archived</NTag>
         <NTag>{{ projects.detail.status }}</NTag>
         <NTag type="info">{{ projects.detail.priority }}</NTag>
-        <NSelect :options="statusOptions" :value="projects.detail.status" @update:value="changeStatus" style="width: 180px" />
+        <NButton size="small" @click="showDrawer = true">Edit schedule…</NButton>
       </NSpace>
       <p style="margin-top: 12px; white-space: pre-wrap;">{{ projects.detail.description || 'No description.' }}</p>
+    </NCard>
+
+    <NCard title="Schedule" :segmented="{ content: 'soft' }">
+      <NDescriptions :column="2" bordered>
+        <NDescriptionsItem label="Started">{{ formatDate(projects.detail.startedAt) }}</NDescriptionsItem>
+        <NDescriptionsItem label="Target">{{ formatDate(projects.detail.targetDate) }}</NDescriptionsItem>
+        <NDescriptionsItem label="Completed">{{ formatDate(projects.detail.completedAt) }}</NDescriptionsItem>
+        <NDescriptionsItem label="Duration">{{ duration ?? '—' }}</NDescriptionsItem>
+        <NDescriptionsItem label="Created">{{ formatDate(projects.detail.createdAt) }}</NDescriptionsItem>
+        <NDescriptionsItem label="Last update">{{ formatDate(projects.detail.updatedAt) }}</NDescriptionsItem>
+      </NDescriptions>
     </NCard>
 
     <NCard title="Linked hardware">
@@ -52,6 +73,15 @@ async function changeStatus(newStatus: string) {
       <NDescriptions v-else><NDescriptionsItem>No hardware linked yet</NDescriptionsItem></NDescriptions>
     </NCard>
 
-    <RouterLink to="/projects"><NButton>Back to project list</NButton></RouterLink>
+    <NSpace>
+      <RouterLink to="/projects"><NButton>Back to project list</NButton></RouterLink>
+      <RouterLink to="/projects/timeline"><NButton>Open timeline</NButton></RouterLink>
+    </NSpace>
   </NSpace>
+
+  <ProjectScheduleDrawer
+    v-model:show="showDrawer"
+    :project="projects.detail"
+    @saved="() => projects.fetchDetail(id)"
+  />
 </template>
