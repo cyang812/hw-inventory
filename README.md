@@ -20,21 +20,63 @@ for the full design.
 
 ## Quick start (dev, SQLite)
 
-Requires .NET 9 SDK, Node 20+, and (optionally) the EF Core CLI:
+Requires .NET 9 SDK and Node 20+. The EF Core CLI is only needed if you plan to
+**author** new migrations (existing migrations auto-apply at startup):
 
 ```bash
 dotnet tool install --global dotnet-ef --version 9.*
 ```
 
-Restore, migrate, seed, and run the backend:
+### Backend — empty DB (your own data)
 
 ```bash
 cd backend
 dotnet restore
-dotnet ef database update --project HwInventory.Api
-dotnet run --project HwInventory.Api -- --seed
 dotnet run --project HwInventory.Api
 ```
+
+That's it. On first start the API will:
+
+1. Create `HwInventory.Api/hw_inventory.db` (SQLite file in the project folder).
+2. Apply all EF Core migrations to bring the schema up to date.
+3. Start listening on `http://127.0.0.1:5080`.
+
+You now have an empty database ready for **real data**. Add it via any of:
+
+- The SPA (`cd frontend && npm run dev`, then open the printed Vite URL).
+- The REST API (Scalar UI at `/scalar`, or `curl` against `/api/hardware`, etc.).
+- A bulk JSON import (see [Importing your own data](#importing-your-own-data) below).
+
+> **Tip — pick where the DB file lives.** The default is relative to the
+> backend project's working directory. Override with `DATABASE_URL`:
+> ```bash
+> # PowerShell
+> $env:DATABASE_URL = "Data Source=D:\hwinv\hw_inventory.db"
+> dotnet run --project HwInventory.Api
+> ```
+> ```bash
+> # bash
+> DATABASE_URL="Data Source=/var/lib/hwinv/hw_inventory.db" \
+>   dotnet run --project HwInventory.Api
+> ```
+
+### Backend — demo data (for poking around)
+
+If you'd rather start with the seeded demo set (a few hardware items, projects,
+activities — useful for screenshots and trying the dashboard):
+
+```bash
+cd backend
+dotnet run --project HwInventory.Api -- --seed   # seeds then exits
+dotnet run --project HwInventory.Api             # then run normally
+```
+
+`--seed` is idempotent-ish: it inserts demo rows on top of whatever's already
+there, so don't run it against a DB you care about. To restart from scratch,
+stop the app and delete `HwInventory.Api/hw_inventory.db` (and the `-shm` /
+`-wal` siblings if present).
+
+### Endpoints (backend)
 
 The backend listens on `http://127.0.0.1:5080` by default:
 
@@ -45,13 +87,70 @@ The backend listens on `http://127.0.0.1:5080` by default:
 - MCP:         `http://127.0.0.1:5080/mcp`
 - Health:      `http://127.0.0.1:5080/api/health`
 
-Frontend:
+### Frontend
 
 ```bash
 cd frontend
 npm install
 npm run dev
 ```
+
+### Importing your own data
+
+The API includes a bulk JSON import that mirrors the export shape, so you can
+hand-author a small JSON file with your hardware and POST it to the server:
+
+```bash
+# export (also handy for backup or moving between dev/prod)
+curl http://127.0.0.1:5080/api/export/json > my-inventory.json
+
+# import (idempotent on categories/tags by slug/name; hardware always inserts)
+curl -X POST -H "Content-Type: application/json" \
+     --data-binary @my-inventory.json \
+     http://127.0.0.1:5080/api/import/json
+```
+
+Minimum viable import payload — every top-level key is optional, and IDs are
+remapped on insert so you can use any positive integers as long as they're
+internally consistent across the file:
+
+```json
+{
+  "categories": [
+    { "id": 1, "name": "Single-board computers", "slug": "sbc" }
+  ],
+  "tags": [
+    { "id": 1, "name": "lab" }
+  ],
+  "hardware": [
+    {
+      "id": 1,
+      "name": "Raspberry Pi 5 (8 GB)",
+      "manufacturer": "Raspberry Pi",
+      "model": "RPi 5",
+      "serialNumber": "1234-5678",
+      "condition": "Working",
+      "status": "Available",
+      "acquiredAt": "2024-09-01T00:00:00Z",
+      "cost": 80.00,
+      "currency": "USD",
+      "location": "lab shelf B",
+      "notes": "Running Pi OS 12",
+      "categoryIds": [1],
+      "tagIds": [1]
+    }
+  ]
+}
+```
+
+Enum values are case-insensitive. Valid `condition`: `Working` | `Partial` |
+`Broken` | `Unknown`. Valid `status`: `Available` | `InUse` | `Loaned` |
+`Archived` | `Sold` | `Lost`.
+
+CSV export is available for spot-checking:
+`/api/export/csv?entity=hardware|activities|projects`. There is intentionally no
+CSV *import* — the shape is too lossy for nested relationships; use the JSON
+import for round-trippable bulk data.
 
 ## Configuration
 

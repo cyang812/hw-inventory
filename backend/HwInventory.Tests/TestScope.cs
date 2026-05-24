@@ -26,6 +26,7 @@ public static class TestScope
         services.AddScoped<HardwareConfigService>();
         services.AddScoped<LoanService>();
         services.AddScoped<DashboardService>();
+        services.AddScoped<ImportExportService>();
 
         var sp = services.BuildServiceProvider();
         var db = sp.GetRequiredService<AppDbContext>();
