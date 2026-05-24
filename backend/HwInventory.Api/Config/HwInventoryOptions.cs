@@ -12,6 +12,7 @@ public class HwInventoryOptions
 
     public string DatabaseUrl { get; set; } = "Data Source=hw_inventory.db";
     public string BindAddress { get; set; } = "http://127.0.0.1:5080";
+    public string GrpcBindAddress { get; set; } = "";
     public string AppEnv { get; set; } = "development";
     public string AuthToken { get; set; } = "";
     public int IdleDefaultDays { get; set; } = 90;
@@ -37,6 +38,9 @@ public static class HwInventoryOptionsLoader
 
         var bind = Environment.GetEnvironmentVariable("BIND_ADDRESS");
         if (!string.IsNullOrWhiteSpace(bind)) opts.BindAddress = bind;
+
+        var grpcBind = Environment.GetEnvironmentVariable("GRPC_BIND_ADDRESS");
+        if (!string.IsNullOrWhiteSpace(grpcBind)) opts.GrpcBindAddress = grpcBind;
 
         var appEnv = Environment.GetEnvironmentVariable("APP_ENV");
         if (!string.IsNullOrWhiteSpace(appEnv)) opts.AppEnv = appEnv;

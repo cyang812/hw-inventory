@@ -810,3 +810,92 @@ Compose contract (`docker-compose.yml` + `.env`):
 
 No TLS in this iteration (LAN only); a `compose.prod.yml` overlay with Caddy can be
 added later for public deployments without changing the base image.
+
+## 11. gRPC surface & testing
+
+### 11.1 What's actually implemented
+
+Only ``HealthService.Check`` (returns ``{status: "ok"}``) is wired up today. The full
+mirror of the REST surface listed in §4 remains intentionally deferred — gRPC is here
+as a "future-facing" channel for CLI/mobile/embedded clients, and shipping it as a
+real endpoint forces the auth and transport plumbing to be correct from day one.
+
+The proto lives at ``proto/hardware.proto`` (package ``hwinventory.v1``, csharp
+namespace ``HwInventory.Api.Grpc``) and is compiled with ``GrpcServices="Both"`` so
+the same assembly produces both server stubs (used by the API) and client stubs
+(consumed by the test project via project reference — no duplicate proto compile).
+
+### 11.2 Bearer auth covers gRPC too
+
+``BearerAuthMiddleware`` guards any path under ``/hwinventory.v1*`` exactly like the
+REST endpoints under ``/api/*``. Verified live against the dev server with grpcurl:
+
+| Scenario                         | Result               |
+|----------------------------------|----------------------|
+| no ``authorization`` header      | 401 → ``Unauthenticated`` |
+| ``authorization: bearer wrong``  | 403 → ``PermissionDenied`` |
+| ``authorization: bearer <good>`` | ``{status:"ok"}``    |
+
+When ``AUTH_TOKEN`` is unset (dev mode), gRPC is reachable without a header.
+
+### 11.3 In-process integration tests
+
+``backend/HwInventory.Tests/GrpcSmokeTests.cs`` runs 4 xUnit tests against an
+in-process ``WebApplicationFactory<Program>``:
+
+1. no-auth + token unset → success
+2. valid bearer → success
+3. missing bearer when token set → ``Unauthenticated``
+4. bad bearer when token set → ``PermissionDenied``
+
+A small ``GrpcApiFactory`` overrides ``HwInventoryOptions`` via DI
+(``services.RemoveAll`` + ``AddSingleton``) — **never** by mutating environment
+variables, which would leak across xUnit's parallel test runners. The factory
+creates the ``GrpcChannel`` over ``TestServer.CreateHandler()``, which transparently
+speaks HTTP/2 in-process and sidesteps the Kestrel/TLS issue described next.
+
+### 11.4 The plain-HTTP / HTTP/2 trap (and why gRPC needs its own port)
+
+gRPC requires HTTP/2. Kestrel's ``Http1AndHttp2`` mixed-protocol endpoint relies on
+TLS + ALPN to negotiate, so on a plain-HTTP endpoint (LAN deployment, no TLS) it
+silently downgrades every connection to HTTP/1.1, and live gRPC clients fail with:
+
+> ``unable to establish HTTP/2 connection``
+
+In-process tests don't hit this because ``TestServer`` simulates HTTP/2 without
+going through Kestrel.
+
+Fix shipped in ``Program.cs``: an **opt-in** second listener configured via the
+``GRPC_BIND_ADDRESS`` env var. When set, Kestrel listens on:
+
+- ``BIND_ADDRESS`` — HTTP/1.1 only (REST, SPA, MCP, OpenAPI)
+- ``GRPC_BIND_ADDRESS`` — HTTP/2 only (gRPC)
+
+When unset, the default deployment surface is unchanged (single port, no gRPC over
+the wire). Browsers don't speak h2c, so the SPA stays on HTTP/1.1; gRPC clients
+target the dedicated port. A future TLS overlay (Caddy in ``compose.prod.yml``) can
+collapse both behind a single 443 with proper ALPN.
+
+### 11.5 Live verification recipe
+
+```powershell
+# 1. start the server with gRPC enabled
+$env:AUTH_TOKEN = "demo-secret"
+$env:GRPC_BIND_ADDRESS = "http://127.0.0.1:5081"
+dotnet run --project backend\HwInventory.Api
+
+# 2. install grpcurl once (Windows)
+winget install --id FullStoryDev.grpcurl
+
+# 3. call HealthService.Check
+grpcurl -plaintext `
+  -H "authorization: bearer demo-secret" `
+  -proto proto\hardware.proto -import-path proto `
+  -d "{}" 127.0.0.1:5081 hwinventory.v1.HealthService/Check
+# → {"status": "ok"}
+```
+
+Reflection is **disabled outside Development** (see ``Program.cs``), so ``grpcurl
+list`` won't enumerate services in production — clients ship the ``.proto`` file
+out-of-band, which is the standard pattern for production gRPC.
+

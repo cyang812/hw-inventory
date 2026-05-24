@@ -62,7 +62,8 @@ Environment variables consumed by the backend:
 | `DATABASE_URL`  | `Data Source=hw_inventory.db`        | Postgres conn string (or EF Core SQLite conn string) |
 | `APP_ENV`       | `development`                        | `production` enforces `AUTH_TOKEN` + explicit bind   |
 | `AUTH_TOKEN`    | _(unset in dev)_                     | Required when `APP_ENV=production`                   |
-| `BIND_ADDRESS`  | `http://127.0.0.1:5080`              | Listening URL                                        |
+| `BIND_ADDRESS`  | `http://127.0.0.1:5080`              | Listening URL (REST + SPA + MCP, HTTP/1.1)           |
+| `GRPC_BIND_ADDRESS` | _(unset → gRPC disabled)_        | Optional separate HTTP/2-only port for live gRPC, e.g. `http://0.0.0.0:5081`. Needed because plain HTTP can't ALPN-negotiate; see plan §11. |
 | `IDLE_DEFAULT_DAYS` | `90`                             | Threshold for "idle" hardware                        |
 
 ## Project layout

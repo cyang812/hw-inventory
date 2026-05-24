@@ -77,6 +77,33 @@ builder.Services.AddCors(o => o.AddDefaultPolicy(p =>
 
 builder.WebHost.UseUrls(opts.BindAddress);
 
+// gRPC needs HTTP/2. Plain-HTTP (no TLS) can't ALPN-negotiate, so Kestrel's mixed
+// Http1AndHttp2 endpoint silently downgrades to HTTP/1.1 and breaks gRPC clients with
+// "unable to establish HTTP/2 connection". The pragmatic fix without TLS is a separate
+// HTTP/2-only listener. It's opt-in via GRPC_BIND_ADDRESS so the default deployment
+// surface (REST + SPA + MCP on a single port) is unchanged.
+if (!string.IsNullOrWhiteSpace(opts.GrpcBindAddress))
+{
+    System.Net.IPAddress ParseHost(string host) => host switch
+    {
+        "0.0.0.0" or "*" or "+" => System.Net.IPAddress.Any,
+        "127.0.0.1" or "localhost" => System.Net.IPAddress.Loopback,
+        _ => System.Net.IPAddress.Parse(host),
+    };
+
+    // Listen(...) overrides UseUrls entirely, so we must re-add the primary
+    // BIND_ADDRESS endpoint as HTTP/1.1 alongside the new HTTP/2 gRPC endpoint.
+    var restUri = new Uri(opts.BindAddress);
+    var grpcUri = new Uri(opts.GrpcBindAddress);
+    builder.WebHost.ConfigureKestrel(o =>
+    {
+        o.Listen(ParseHost(restUri.Host), restUri.Port, l =>
+            l.Protocols = Microsoft.AspNetCore.Server.Kestrel.Core.HttpProtocols.Http1);
+        o.Listen(ParseHost(grpcUri.Host), grpcUri.Port, l =>
+            l.Protocols = Microsoft.AspNetCore.Server.Kestrel.Core.HttpProtocols.Http2);
+    });
+}
+
 var app = builder.Build();
 
 // ----- Pipeline -----
