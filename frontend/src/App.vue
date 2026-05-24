@@ -17,6 +17,7 @@ const menuOptions = [
   { label: 'Dashboard', key: 'dashboard' },
   { label: 'Hardware', key: 'hardware' },
   { label: 'Projects', key: 'projects' },
+  { label: 'Timeline', key: 'projects-timeline' },
   { label: 'Settings', key: 'settings' },
 ];
 
