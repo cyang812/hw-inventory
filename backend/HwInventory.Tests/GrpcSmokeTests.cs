@@ -117,4 +117,43 @@ public class GrpcSmokeTests
 
         Assert.NotEqual(StatusCode.OK, ex.StatusCode);
     }
+
+    /// <summary>
+    /// The proto declares 7 services beyond Health (Category, Tag, Hardware, Project,
+    /// Activity, Dashboard, ImportExport) but only HealthService is registered with
+    /// <c>MapGrpcService&lt;T&gt;()</c>. Calling any of the others must surface as
+    /// <see cref="StatusCode.Unimplemented"/> — clients can rely on this until the
+    /// services land. When phase 3 wires one up, replace its case here with a real
+    /// behavioural test.
+    /// </summary>
+    [Fact]
+    public async Task DeclaredButUnregisteredServices_ReturnUnimplemented()
+    {
+        using var factory = new GrpcApiFactory();
+        using var channel = factory.CreateGrpcChannel();
+
+        var category = new CategoryService.CategoryServiceClient(channel);
+        var tag = new TagService.TagServiceClient(channel);
+        var hardware = new HardwareService.HardwareServiceClient(channel);
+        var project = new ProjectService.ProjectServiceClient(channel);
+        var activity = new ActivityService.ActivityServiceClient(channel);
+        var dashboard = new DashboardService.DashboardServiceClient(channel);
+        var importExport = new ImportExportService.ImportExportServiceClient(channel);
+
+        async Task AssertUnimplemented(Func<Task> call, string label)
+        {
+            var ex = await Assert.ThrowsAsync<RpcException>(call);
+            Assert.True(
+                ex.StatusCode == StatusCode.Unimplemented,
+                $"{label}: expected Unimplemented, got {ex.StatusCode} ({ex.Status.Detail})");
+        }
+
+        await AssertUnimplemented(() => category.ListAsync(new ListCategoriesRequest()).ResponseAsync, "CategoryService.List");
+        await AssertUnimplemented(() => tag.ListAsync(new ListTagsRequest()).ResponseAsync, "TagService.List");
+        await AssertUnimplemented(() => hardware.ListAsync(new ListHardwareRequest()).ResponseAsync, "HardwareService.List");
+        await AssertUnimplemented(() => project.ListAsync(new ListProjectsRequest()).ResponseAsync, "ProjectService.List");
+        await AssertUnimplemented(() => activity.ListAsync(new ListActivitiesRequest()).ResponseAsync, "ActivityService.List");
+        await AssertUnimplemented(() => dashboard.GetStatsAsync(new Empty()).ResponseAsync, "DashboardService.GetStats");
+        await AssertUnimplemented(() => importExport.ExportJsonAsync(new Empty()).ResponseAsync, "ImportExportService.ExportJson");
+    }
 }

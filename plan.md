@@ -352,6 +352,11 @@ POST   /api/import/csv?entity=...                   # multipart upload
 surface — every REST endpoint has a gRPC equivalent. The proto is the source of truth for
 the gRPC contract; REST and gRPC handlers both delegate to the same service layer.
 
+> **Implementation status:** as of phase 2 only `HealthService` is wired up server-side;
+> the other 7 services are declared in the proto but return `Unimplemented` at runtime
+> until phase 3 lands the CLI client. See §11 for the full status table, integration
+> tests, and the per-service rollout recipe.
+
 **Services** (one `service` block per REST resource group):
 
 | Service                | Mirrors                          |
@@ -815,15 +820,55 @@ added later for public deployments without changing the base image.
 
 ### 11.1 What's actually implemented
 
-Only ``HealthService.Check`` (returns ``{status: "ok"}``) is wired up today. The full
-mirror of the REST surface listed in §4 remains intentionally deferred — gRPC is here
-as a "future-facing" channel for CLI/mobile/embedded clients, and shipping it as a
-real endpoint forces the auth and transport plumbing to be correct from day one.
+``proto/hardware.proto`` defines the **full contract** of all 8 services from §4
+(HealthService, CategoryService, TagService, HardwareService, ProjectService,
+ActivityService, DashboardService, ImportExportService) — ~50 RPC methods and
+~30 message types in total. The proto is the single source of truth for the
+gRPC surface and is intentionally kept ahead of the server implementation.
 
-The proto lives at ``proto/hardware.proto`` (package ``hwinventory.v1``, csharp
-namespace ``HwInventory.Api.Grpc``) and is compiled with ``GrpcServices="Both"`` so
-the same assembly produces both server stubs (used by the API) and client stubs
-(consumed by the test project via project reference — no duplicate proto compile).
+**Server-side implementation status:**
+
+| Service              | Wired in ``Program.cs``? | Runtime behaviour                                   |
+|----------------------|--------------------------|-----------------------------------------------------|
+| ``HealthService``    | ✅ Yes                    | Returns ``{status:"ok"}`` — see ``HealthGrpcService.cs`` |
+| ``CategoryService``  | ❌ No                     | All methods return ``StatusCode.Unimplemented``     |
+| ``TagService``       | ❌ No                     | All methods return ``StatusCode.Unimplemented``     |
+| ``HardwareService``  | ❌ No                     | All methods return ``StatusCode.Unimplemented``     |
+| ``ProjectService``   | ❌ No                     | All methods return ``StatusCode.Unimplemented``     |
+| ``ActivityService``  | ❌ No                     | All methods return ``StatusCode.Unimplemented``     |
+| ``DashboardService`` | ❌ No                     | All methods return ``StatusCode.Unimplemented``     |
+| ``ImportExportService`` | ❌ No                  | All methods return ``StatusCode.Unimplemented``     |
+
+This is deliberate. Wiring each service is mechanical (the C# class unwraps the
+request, calls the matching ``Services/*`` method that already powers the REST
+endpoint, and re-packs the result) but adds ~500-800 lines of wrapper code that
+nobody calls today — REST and MCP cover every current consumer. The contract
+ships now so future clients (CLI in phase 3, mobile/desktop later) can generate
+stubs and code against the real shape; the server-side wiring lands incrementally
+when a service has an actual caller.
+
+The proto is compiled with ``GrpcServices="Both"`` so the same assembly produces
+server bases (used by ``HealthGrpcService`` today, the rest tomorrow) and client
+stubs (consumed by the test project via project reference — no duplicate proto
+compile).
+
+**Contract-quality notes that shaped the proto:**
+- Optional scalars use proto3 ``optional`` so clients can tell "absent" from
+  "default", matching the REST DTO null vs default semantics.
+- ``Hardware.cost`` is a decimal-as-string, not ``double``. Protobuf has no
+  decimal type and double would silently round on money.
+- JSON-blob fields (``identifiers``, ``specs``, ``links``, ``metadata``) use
+  ``google.protobuf.Struct`` — round-trips object/array/string/number/bool but
+  doesn't preserve int-vs-float. Acceptable for free-form spec data; promote to
+  a typed field if anything becomes query-critical.
+- Timestamps are ``google.protobuf.Timestamp`` (UTC).
+- Partial updates use ``google.protobuf.FieldMask update_mask`` — gRPC's PATCH
+  equivalent, avoiding the "null = clear or omit?" ambiguity.
+- Enums use ``_UNSPECIFIED = 0`` distinct from any domain ``_UNKNOWN`` value;
+  the server will reject unspecified values on write.
+- Import/export is **unary** with ``bytes`` payloads, not streaming. The
+  expected scale (a few thousand items for a personal inventory) doesn't
+  justify streaming complexity; streaming variants can be added later if needed.
 
 ### 11.2 Bearer auth covers gRPC too
 
@@ -840,13 +885,19 @@ When ``AUTH_TOKEN`` is unset (dev mode), gRPC is reachable without a header.
 
 ### 11.3 In-process integration tests
 
-``backend/HwInventory.Tests/GrpcSmokeTests.cs`` runs 4 xUnit tests against an
+``backend/HwInventory.Tests/GrpcSmokeTests.cs`` runs **5** xUnit tests against an
 in-process ``WebApplicationFactory<Program>``:
 
 1. no-auth + token unset → success
 2. valid bearer → success
 3. missing bearer when token set → ``Unauthenticated``
 4. bad bearer when token set → ``PermissionDenied``
+5. **contract-without-implementation** — every declared-but-unregistered
+   service (Category, Tag, Hardware, Project, Activity, Dashboard,
+   ImportExport) must return ``StatusCode.Unimplemented``. When a service is
+   wired in phase 3, replace its case in this test with a real behavioural
+   assertion — the test forces the implementation status to stay in sync with
+   the contract.
 
 A small ``GrpcApiFactory`` overrides ``HwInventoryOptions`` via DI
 (``services.RemoveAll`` + ``AddSingleton``) — **never** by mutating environment
@@ -898,4 +949,32 @@ grpcurl -plaintext `
 Reflection is **disabled outside Development** (see ``Program.cs``), so ``grpcurl
 list`` won't enumerate services in production — clients ship the ``.proto`` file
 out-of-band, which is the standard pattern for production gRPC.
+
+### 11.6 Rollout plan for the remaining services
+
+When a real consumer needs a service, wire it in roughly this order (each step
+is mechanical because the business logic already lives in ``Services/*``):
+
+1. Create ``backend/HwInventory.Api/Grpc/<Name>GrpcService.cs`` that inherits
+   from the generated ``<Name>Base`` class.
+2. For each RPC: unwrap the proto request → call the matching ``Services/*``
+   method → map the DTO result back to the proto message (helpers in a new
+   ``Grpc/ProtoMapping.cs`` mirror the existing ``Services/Mapping.cs``).
+3. ``app.MapGrpcService<<Name>GrpcService>();`` in ``Program.cs`` next to
+   ``MapGrpcService<HealthGrpcService>()``.
+4. Replace the corresponding ``AssertUnimplemented`` line in
+   ``GrpcSmokeTests.DeclaredButUnregisteredServices_ReturnUnimplemented`` with
+   a real behavioural test (and add per-method tests under a new test class).
+5. Bump the proto comment block at the top of ``hardware.proto`` to remove the
+   newly-implemented service from the "contract only" list.
+
+Suggested order based on what a CLI client would want first:
+``DashboardService.GetStats`` → ``HardwareService.{List, Get, MarkUsedToday}``
+→ ``ActivityService.List`` → ``ProjectService.{List, Get}`` → write methods
+(``Create``/``Update``/``Link*``) → ``CategoryService``/``TagService`` →
+``ImportExportService``.
+
+The ``v1`` package label freezes per-service: the message and method shapes
+for any service that has shipped end-to-end are stable; services still marked
+"contract only" in §11.1 may have breaking proto changes until they ship.
 

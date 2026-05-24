@@ -1,3 +1,19 @@
+// hw-inventory v1 gRPC contract — mirrors the REST surface at /api/*.
+//
+// IMPLEMENTATION STATUS (read me!)
+// --------------------------------
+// This file is the *contract* described in plan.md §4. As of phase 2 only
+// HealthService is wired up on the server (see Grpc/HealthGrpcService.cs and
+// Program.cs's MapGrpcService<HealthGrpcService>()). Every other service is
+// fully described here but NOT registered, so callers receive UNIMPLEMENTED
+// from the framework. Service classes will be added in phase 3 alongside the
+// CLI client. See plan.md §11 for the rollout plan.
+//
+// The package name is hwinventory.v1 but the contract is still a draft —
+// breaking changes are allowed until the first non-Health service ships.
+// Once a service is implemented end-to-end, the corresponding messages and
+// methods freeze under v1 semver.
+
 syntax = "proto3";
 
 package hwinventory.v1;
@@ -5,6 +21,259 @@ package hwinventory.v1;
 option csharp_namespace = "HwInventory.Api.Grpc";
 
 import "google/protobuf/empty.proto";
+import "google/protobuf/timestamp.proto";
+import "google/protobuf/field_mask.proto";
+import "google/protobuf/struct.proto";
+
+// -----------------------------------------------------------------------------
+// Enums — mirror Models/Enums.cs. _UNSPECIFIED = 0 is the proto3 default the
+// server treats as "no value supplied"; Unknown is a real domain value and stays
+// distinct from Unspecified.
+// -----------------------------------------------------------------------------
+
+enum HardwareCondition {
+  HARDWARE_CONDITION_UNSPECIFIED = 0;
+  HARDWARE_CONDITION_WORKING = 1;
+  HARDWARE_CONDITION_PARTIAL = 2;
+  HARDWARE_CONDITION_BROKEN = 3;
+  HARDWARE_CONDITION_UNKNOWN = 4;
+}
+
+enum HardwareStatus {
+  HARDWARE_STATUS_UNSPECIFIED = 0;
+  HARDWARE_STATUS_AVAILABLE = 1;
+  HARDWARE_STATUS_IN_USE = 2;
+  HARDWARE_STATUS_LOANED = 3;
+  HARDWARE_STATUS_ARCHIVED = 4;
+  HARDWARE_STATUS_SOLD = 5;
+  HARDWARE_STATUS_LOST = 6;
+}
+
+enum ProjectStatus {
+  PROJECT_STATUS_UNSPECIFIED = 0;
+  PROJECT_STATUS_IDEA = 1;
+  PROJECT_STATUS_PLANNED = 2;
+  PROJECT_STATUS_IN_PROGRESS = 3;
+  PROJECT_STATUS_PAUSED = 4;
+  PROJECT_STATUS_DONE = 5;
+  PROJECT_STATUS_ABANDONED = 6;
+}
+
+enum ProjectPriority {
+  PROJECT_PRIORITY_UNSPECIFIED = 0;
+  PROJECT_PRIORITY_LOW = 1;
+  PROJECT_PRIORITY_MEDIUM = 2;
+  PROJECT_PRIORITY_HIGH = 3;
+}
+
+enum ActivityKind {
+  ACTIVITY_KIND_UNSPECIFIED = 0;
+  ACTIVITY_KIND_USED = 1;
+  ACTIVITY_KIND_FLASHED = 2;
+  ACTIVITY_KIND_REPAIRED = 3;
+  ACTIVITY_KIND_MEASURED = 4;
+  ACTIVITY_KIND_CONFIGURED = 5;
+  ACTIVITY_KIND_INSPECTED = 6;
+  ACTIVITY_KIND_MOVED = 7;
+  ACTIVITY_KIND_NOTE = 8;
+}
+
+enum HardwareConfigKind {
+  HARDWARE_CONFIG_KIND_UNSPECIFIED = 0;
+  HARDWARE_CONFIG_KIND_FIRMWARE = 1;
+  HARDWARE_CONFIG_KIND_OS = 2;
+  HARDWARE_CONFIG_KIND_BOOTLOADER = 3;
+  HARDWARE_CONFIG_KIND_CONFIG = 4;
+}
+
+enum ImportExportEntity {
+  IMPORT_EXPORT_ENTITY_UNSPECIFIED = 0;
+  IMPORT_EXPORT_ENTITY_HARDWARE = 1;
+  IMPORT_EXPORT_ENTITY_ACTIVITIES = 2;
+  IMPORT_EXPORT_ENTITY_PROJECTS = 3;
+}
+
+// -----------------------------------------------------------------------------
+// Resource messages — mirror Dtos/*.cs.
+//
+// Conventions:
+//   * Optional scalars use proto3 `optional` so clients can distinguish "absent"
+//     from "default value", matching the REST DTO null vs default semantics.
+//   * `string cost`  — protobuf has no decimal; we use a decimal-as-string
+//     instead of double to avoid silent rounding on money.
+//   * JSON-blob fields (identifiers, specs, links, metadata) use
+//     google.protobuf.Struct, which round-trips object/array/string/number/bool
+//     but does NOT preserve int-vs-float distinction. That's an acceptable
+//     trade for "free-form hardware spec data" but anything query-critical
+//     should be promoted to a typed field.
+//   * Timestamps are google.protobuf.Timestamp (UTC).
+// -----------------------------------------------------------------------------
+
+message Category {
+  int32 id = 1;
+  string name = 2;
+  string slug = 3;
+  optional int32 parent_id = 4;
+  optional string icon = 5;
+  optional string description = 6;
+}
+
+message Tag {
+  int32 id = 1;
+  string name = 2;
+  optional string color = 3;
+}
+
+message HardwareProjectLink {
+  int32 project_id = 1;
+  string project_title = 2;
+  optional string role = 3;
+  google.protobuf.Timestamp created_at = 4;
+}
+
+message ProjectHardwareLink {
+  int32 hardware_id = 1;
+  string hardware_name = 2;
+  optional string role = 3;
+  google.protobuf.Timestamp created_at = 4;
+}
+
+message Activity {
+  int32 id = 1;
+  int32 hardware_id = 2;
+  optional int32 project_id = 3;
+  ActivityKind kind = 4;
+  optional string description = 5;
+  google.protobuf.Struct metadata = 6;
+  google.protobuf.Timestamp occurred_at = 7;
+  google.protobuf.Timestamp created_at = 8;
+}
+
+message HardwareConfig {
+  int32 id = 1;
+  int32 hardware_id = 2;
+  HardwareConfigKind kind = 3;
+  string name = 4;
+  optional string version = 5;
+  optional string notes = 6;
+  optional google.protobuf.Timestamp installed_at = 7;
+  bool is_current = 8;
+  optional int32 activity_id = 9;
+  google.protobuf.Timestamp created_at = 10;
+}
+
+message Loan {
+  int32 id = 1;
+  int32 hardware_id = 2;
+  string loaned_to = 3;
+  google.protobuf.Timestamp loaned_at = 4;
+  optional google.protobuf.Timestamp due_at = 5;
+  optional google.protobuf.Timestamp returned_at = 6;
+  optional string notes = 7;
+  google.protobuf.Timestamp created_at = 8;
+}
+
+message HardwareSummary {
+  int32 id = 1;
+  string name = 2;
+  optional string manufacturer = 3;
+  optional string model = 4;
+  HardwareCondition condition = 5;
+  HardwareStatus status = 6;
+  optional string location = 7;
+  optional google.protobuf.Timestamp last_used_at = 8;
+  optional google.protobuf.Timestamp last_activity_at = 9;
+  optional google.protobuf.Timestamp archived_at = 10;
+  repeated string categories = 11;
+  repeated string tags = 12;
+  google.protobuf.Timestamp created_at = 13;
+  google.protobuf.Timestamp updated_at = 14;
+}
+
+message Hardware {
+  int32 id = 1;
+  string name = 2;
+  optional string manufacturer = 3;
+  optional string model = 4;
+  optional string serial_number = 5;
+  optional string sku = 6;
+  optional string asset_tag = 7;
+  optional string revision = 8;
+  google.protobuf.Struct identifiers = 9;
+  google.protobuf.Struct specs = 10;
+  google.protobuf.Struct links = 11;
+  optional google.protobuf.Timestamp acquired_at = 12;
+  optional string purchased_from = 13;
+  optional string purchase_url = 14;
+  optional string cost = 15;             // decimal-as-string, see note above
+  optional string currency = 16;
+  optional google.protobuf.Timestamp warranty_expires_at = 17;
+  optional string location = 18;
+  HardwareCondition condition = 19;
+  HardwareStatus status = 20;
+  optional string notes = 21;
+  optional google.protobuf.Timestamp last_used_at = 22;
+  optional google.protobuf.Timestamp last_activity_at = 23;
+  optional google.protobuf.Timestamp archived_at = 24;
+  google.protobuf.Timestamp created_at = 25;
+  google.protobuf.Timestamp updated_at = 26;
+  repeated Category categories = 27;
+  repeated Tag tags = 28;
+  repeated HardwareProjectLink projects = 29;
+  repeated HardwareConfig current_configs = 30;
+  optional Loan active_loan = 31;
+  repeated Activity recent_activities = 32;
+}
+
+message ProjectSummary {
+  int32 id = 1;
+  string title = 2;
+  string slug = 3;
+  ProjectStatus status = 4;
+  ProjectPriority priority = 5;
+  optional google.protobuf.Timestamp started_at = 6;
+  optional google.protobuf.Timestamp target_date = 7;
+  optional google.protobuf.Timestamp completed_at = 8;
+  optional google.protobuf.Timestamp archived_at = 9;
+  int32 hardware_count = 10;
+  google.protobuf.Timestamp created_at = 11;
+  google.protobuf.Timestamp updated_at = 12;
+}
+
+message Project {
+  int32 id = 1;
+  string title = 2;
+  string slug = 3;
+  optional string description = 4;
+  ProjectStatus status = 5;
+  ProjectPriority priority = 6;
+  optional google.protobuf.Timestamp started_at = 7;
+  optional google.protobuf.Timestamp target_date = 8;
+  optional google.protobuf.Timestamp completed_at = 9;
+  optional string notes = 10;
+  google.protobuf.Struct links = 11;
+  optional google.protobuf.Timestamp archived_at = 12;
+  google.protobuf.Timestamp created_at = 13;
+  google.protobuf.Timestamp updated_at = 14;
+  repeated ProjectHardwareLink hardware = 15;
+}
+
+message DashboardStats {
+  int32 hardware_total = 1;
+  int32 hardware_archived = 2;
+  int32 projects_total = 3;
+  int32 activities_last_30_days = 4;
+  int32 idle_count = 5;
+  int32 overdue_loans = 6;
+  map<string, int32> by_status = 7;
+  map<string, int32> by_condition = 8;
+  map<string, int32> by_category = 9;
+  map<string, int32> projects_by_status = 10;
+}
+
+// -----------------------------------------------------------------------------
+// HealthService — the only service implemented today.
+// -----------------------------------------------------------------------------
 
 service HealthService {
   rpc Check(google.protobuf.Empty) returns (HealthResponse);
@@ -12,4 +281,455 @@ service HealthService {
 
 message HealthResponse {
   string status = 1;
+}
+
+// -----------------------------------------------------------------------------
+// CategoryService — mirrors /api/categories/*.
+// CONTRACT ONLY. Not implemented as of phase 2.
+// -----------------------------------------------------------------------------
+
+service CategoryService {
+  rpc List(ListCategoriesRequest) returns (ListCategoriesResponse);
+  rpc Get(GetCategoryRequest) returns (Category);
+  rpc Create(CreateCategoryRequest) returns (Category);
+  rpc Update(UpdateCategoryRequest) returns (Category);
+  rpc Delete(DeleteCategoryRequest) returns (google.protobuf.Empty);
+}
+
+message ListCategoriesRequest {
+  int32 limit = 1;
+  int32 offset = 2;
+  optional string sort = 3;
+  optional string q = 4;
+}
+
+message ListCategoriesResponse {
+  repeated Category items = 1;
+  int32 total = 2;
+  int32 limit = 3;
+  int32 offset = 4;
+}
+
+message GetCategoryRequest { int32 id = 1; }
+
+message CreateCategoryRequest {
+  string name = 1;
+  string slug = 2;
+  optional int32 parent_id = 3;
+  optional string icon = 4;
+  optional string description = 5;
+}
+
+message UpdateCategoryRequest {
+  int32 id = 1;
+  Category category = 2;
+  google.protobuf.FieldMask update_mask = 3;  // only masked fields are written
+}
+
+message DeleteCategoryRequest { int32 id = 1; }
+
+// -----------------------------------------------------------------------------
+// TagService — mirrors /api/tags/*.
+// CONTRACT ONLY.
+// -----------------------------------------------------------------------------
+
+service TagService {
+  rpc List(ListTagsRequest) returns (ListTagsResponse);
+  rpc Create(CreateTagRequest) returns (Tag);
+  rpc Delete(DeleteTagRequest) returns (google.protobuf.Empty);
+}
+
+message ListTagsRequest {
+  int32 limit = 1;
+  int32 offset = 2;
+  optional string sort = 3;
+  optional string q = 4;
+}
+
+message ListTagsResponse {
+  repeated Tag items = 1;
+  int32 total = 2;
+  int32 limit = 3;
+  int32 offset = 4;
+}
+
+message CreateTagRequest {
+  string name = 1;
+  optional string color = 2;
+}
+
+message DeleteTagRequest { int32 id = 1; }
+
+// -----------------------------------------------------------------------------
+// HardwareService — mirrors /api/hardware/* including sub-resources
+// (activities, projects, configs, loans). CONTRACT ONLY.
+// -----------------------------------------------------------------------------
+
+service HardwareService {
+  // Core CRUD
+  rpc List(ListHardwareRequest) returns (ListHardwareResponse);
+  rpc Get(GetHardwareRequest) returns (Hardware);
+  rpc Create(CreateHardwareRequest) returns (Hardware);
+  rpc Update(UpdateHardwareRequest) returns (Hardware);
+
+  // Soft delete = Archive; hard delete = Delete (admin/CLI use)
+  rpc Archive(ArchiveHardwareRequest) returns (google.protobuf.Empty);
+  rpc Delete(DeleteHardwareRequest) returns (google.protobuf.Empty);
+  rpc Unarchive(UnarchiveHardwareRequest) returns (Hardware);
+
+  // Convenience write: logs a "used" activity with occurred_at=now
+  rpc MarkUsedToday(MarkUsedTodayRequest) returns (Hardware);
+
+  // Category / tag link idempotency (PUT/DELETE on REST side)
+  rpc LinkCategory(LinkCategoryRequest) returns (google.protobuf.Empty);
+  rpc UnlinkCategory(UnlinkCategoryRequest) returns (google.protobuf.Empty);
+  rpc LinkTag(LinkTagRequest) returns (google.protobuf.Empty);
+  rpc UnlinkTag(UnlinkTagRequest) returns (google.protobuf.Empty);
+
+  // Sub-resource: activities
+  rpc ListActivities(ListHardwareActivitiesRequest) returns (ListActivitiesResponse);
+  rpc LogActivity(LogActivityRequest) returns (Activity);
+
+  // Sub-resource: project links
+  rpc ListProjects(ListHardwareProjectsRequest) returns (ListHardwareProjectsResponse);
+  rpc LinkProject(LinkProjectRequest) returns (HardwareProjectLink);
+  rpc UnlinkProject(UnlinkProjectRequest) returns (google.protobuf.Empty);
+
+  // Sub-resource: configs (firmware / OS / bootloader / config)
+  rpc ListConfigs(ListHardwareConfigsRequest) returns (ListHardwareConfigsResponse);
+  rpc RecordConfig(RecordConfigRequest) returns (HardwareConfig);
+  rpc DeleteConfig(DeleteConfigRequest) returns (google.protobuf.Empty);
+
+  // Sub-resource: loans
+  rpc ListLoans(ListHardwareLoansRequest) returns (ListHardwareLoansResponse);
+  rpc StartLoan(StartLoanRequest) returns (Loan);
+  rpc UpdateLoan(UpdateLoanRequest) returns (Loan);
+}
+
+// Mirrors HardwareListFilter — category_ids/tag_ids are repeated (REST uses
+// repeatable `?category=&category=` query params; multi-values are AND).
+message ListHardwareRequest {
+  int32 limit = 1;
+  int32 offset = 2;
+  optional string sort = 3;
+  optional string q = 4;
+  repeated int32 category_ids = 5;
+  repeated int32 tag_ids = 6;
+  optional HardwareStatus status = 7;
+  optional HardwareCondition condition = 8;
+  optional int32 idle_days = 9;
+  bool include_archived = 10;
+  optional google.protobuf.Timestamp created_after = 11;
+  optional google.protobuf.Timestamp created_before = 12;
+  optional google.protobuf.Timestamp updated_after = 13;
+  optional google.protobuf.Timestamp updated_before = 14;
+}
+
+message ListHardwareResponse {
+  repeated HardwareSummary items = 1;
+  int32 total = 2;
+  int32 limit = 3;
+  int32 offset = 4;
+}
+
+message GetHardwareRequest { int32 id = 1; }
+
+message CreateHardwareRequest {
+  string name = 1;
+  optional string manufacturer = 2;
+  optional string model = 3;
+  optional string serial_number = 4;
+  optional string sku = 5;
+  optional string asset_tag = 6;
+  optional string revision = 7;
+  google.protobuf.Struct identifiers = 8;
+  google.protobuf.Struct specs = 9;
+  google.protobuf.Struct links = 10;
+  optional google.protobuf.Timestamp acquired_at = 11;
+  optional string purchased_from = 12;
+  optional string purchase_url = 13;
+  optional string cost = 14;
+  optional string currency = 15;
+  optional google.protobuf.Timestamp warranty_expires_at = 16;
+  optional string location = 17;
+  HardwareCondition condition = 18;
+  HardwareStatus status = 19;
+  optional string notes = 20;
+  repeated int32 category_ids = 21;
+  repeated int32 tag_ids = 22;
+}
+
+message UpdateHardwareRequest {
+  int32 id = 1;
+  Hardware hardware = 2;
+  google.protobuf.FieldMask update_mask = 3;
+}
+
+message ArchiveHardwareRequest { int32 id = 1; }
+message DeleteHardwareRequest { int32 id = 1; }
+message UnarchiveHardwareRequest { int32 id = 1; }
+message MarkUsedTodayRequest { int32 id = 1; }
+
+message LinkCategoryRequest { int32 hardware_id = 1; int32 category_id = 2; }
+message UnlinkCategoryRequest { int32 hardware_id = 1; int32 category_id = 2; }
+message LinkTagRequest { int32 hardware_id = 1; int32 tag_id = 2; }
+message UnlinkTagRequest { int32 hardware_id = 1; int32 tag_id = 2; }
+
+message ListHardwareActivitiesRequest {
+  int32 hardware_id = 1;
+  int32 limit = 2;
+  int32 offset = 3;
+  optional string sort = 4;
+  optional ActivityKind kind = 5;
+  optional int32 project_id = 6;
+  optional google.protobuf.Timestamp occurred_after = 7;
+  optional google.protobuf.Timestamp occurred_before = 8;
+}
+
+message LogActivityRequest {
+  int32 hardware_id = 1;
+  ActivityKind kind = 2;
+  optional string description = 3;
+  google.protobuf.Struct metadata = 4;
+  optional google.protobuf.Timestamp occurred_at = 5;
+  optional int32 project_id = 6;
+}
+
+message ListHardwareProjectsRequest { int32 hardware_id = 1; }
+
+message ListHardwareProjectsResponse {
+  repeated HardwareProjectLink items = 1;
+}
+
+message LinkProjectRequest {
+  int32 hardware_id = 1;
+  int32 project_id = 2;
+  optional string role = 3;  // idempotent — re-link updates role
+}
+
+message UnlinkProjectRequest {
+  int32 hardware_id = 1;
+  int32 project_id = 2;
+}
+
+message ListHardwareConfigsRequest {
+  int32 hardware_id = 1;
+  optional HardwareConfigKind kind = 2;
+  optional bool current = 3;
+  int32 limit = 4;
+  int32 offset = 5;
+}
+
+message ListHardwareConfigsResponse {
+  repeated HardwareConfig items = 1;
+  int32 total = 2;
+  int32 limit = 3;
+  int32 offset = 4;
+}
+
+message RecordConfigRequest {
+  int32 hardware_id = 1;
+  HardwareConfigKind kind = 2;
+  string name = 3;
+  optional string version = 4;
+  optional string notes = 5;
+  optional google.protobuf.Timestamp installed_at = 6;
+  bool is_current = 7;
+  bool log_activity = 8;
+}
+
+message DeleteConfigRequest {
+  int32 hardware_id = 1;
+  int32 config_id = 2;
+}
+
+message ListHardwareLoansRequest { int32 hardware_id = 1; }
+
+message ListHardwareLoansResponse {
+  repeated Loan items = 1;
+}
+
+message StartLoanRequest {
+  int32 hardware_id = 1;
+  string loaned_to = 2;
+  optional google.protobuf.Timestamp loaned_at = 3;
+  optional google.protobuf.Timestamp due_at = 4;
+  optional string notes = 5;
+}
+
+message UpdateLoanRequest {
+  int32 hardware_id = 1;
+  int32 loan_id = 2;
+  optional google.protobuf.Timestamp due_at = 3;
+  optional google.protobuf.Timestamp returned_at = 4;
+  optional string notes = 5;
+  bool clear_returned = 6;
+}
+
+// -----------------------------------------------------------------------------
+// ProjectService — mirrors /api/projects/*. CONTRACT ONLY.
+// -----------------------------------------------------------------------------
+
+service ProjectService {
+  rpc List(ListProjectsRequest) returns (ListProjectsResponse);
+  rpc Get(GetProjectRequest) returns (Project);
+  rpc Create(CreateProjectRequest) returns (Project);
+  rpc Update(UpdateProjectRequest) returns (Project);
+  rpc Archive(ArchiveProjectRequest) returns (google.protobuf.Empty);
+  rpc Unarchive(UnarchiveProjectRequest) returns (Project);
+
+  rpc ListHardware(ListProjectHardwareRequest) returns (ListProjectHardwareResponse);
+  rpc LinkHardware(LinkHardwareRequest) returns (ProjectHardwareLink);
+  rpc UnlinkHardware(UnlinkHardwareRequest) returns (google.protobuf.Empty);
+}
+
+message ListProjectsRequest {
+  int32 limit = 1;
+  int32 offset = 2;
+  optional string sort = 3;
+  optional string q = 4;
+  optional ProjectStatus status = 5;
+  optional ProjectPriority priority = 6;
+  bool include_archived = 7;
+  optional google.protobuf.Timestamp created_after = 8;
+  optional google.protobuf.Timestamp created_before = 9;
+}
+
+message ListProjectsResponse {
+  repeated ProjectSummary items = 1;
+  int32 total = 2;
+  int32 limit = 3;
+  int32 offset = 4;
+}
+
+message GetProjectRequest { int32 id = 1; }
+
+message CreateProjectRequest {
+  string title = 1;
+  optional string slug = 2;
+  optional string description = 3;
+  ProjectStatus status = 4;
+  ProjectPriority priority = 5;
+  optional google.protobuf.Timestamp started_at = 6;
+  optional google.protobuf.Timestamp target_date = 7;
+  optional string notes = 8;
+  google.protobuf.Struct links = 9;
+}
+
+message UpdateProjectRequest {
+  int32 id = 1;
+  Project project = 2;
+  google.protobuf.FieldMask update_mask = 3;
+}
+
+message ArchiveProjectRequest { int32 id = 1; }
+message UnarchiveProjectRequest { int32 id = 1; }
+
+message ListProjectHardwareRequest { int32 project_id = 1; }
+
+message ListProjectHardwareResponse {
+  repeated ProjectHardwareLink items = 1;
+}
+
+message LinkHardwareRequest {
+  int32 project_id = 1;
+  int32 hardware_id = 2;
+  optional string role = 3;
+}
+
+message UnlinkHardwareRequest {
+  int32 project_id = 1;
+  int32 hardware_id = 2;
+}
+
+// -----------------------------------------------------------------------------
+// ActivityService — cross-cutting timeline view at /api/activities.
+// CONTRACT ONLY.
+// -----------------------------------------------------------------------------
+
+service ActivityService {
+  rpc List(ListActivitiesRequest) returns (ListActivitiesResponse);
+}
+
+message ListActivitiesRequest {
+  int32 limit = 1;
+  int32 offset = 2;
+  optional string sort = 3;
+  optional int32 hardware_id = 4;
+  optional int32 project_id = 5;
+  optional ActivityKind kind = 6;
+  optional google.protobuf.Timestamp occurred_after = 7;
+  optional google.protobuf.Timestamp occurred_before = 8;
+}
+
+message ListActivitiesResponse {
+  repeated Activity items = 1;
+  int32 total = 2;
+  int32 limit = 3;
+  int32 offset = 4;
+}
+
+// -----------------------------------------------------------------------------
+// DashboardService — mirrors /api/dashboard/*. CONTRACT ONLY.
+// -----------------------------------------------------------------------------
+
+service DashboardService {
+  rpc GetStats(google.protobuf.Empty) returns (DashboardStats);
+  rpc ListIdle(ListIdleRequest) returns (ListHardwareResponse);
+  rpc ListSuggestions(ListSuggestionsRequest) returns (ListHardwareResponse);
+  rpc ListOverdueLoans(google.protobuf.Empty) returns (ListHardwareLoansResponse);
+}
+
+message ListIdleRequest {
+  int32 days = 1;       // override IDLE_DEFAULT_DAYS; 0 = use server default
+  int32 limit = 2;
+  int32 offset = 3;
+}
+
+message ListSuggestionsRequest {
+  int32 limit = 1;
+  int32 offset = 2;
+}
+
+// -----------------------------------------------------------------------------
+// ImportExportService — mirrors /api/import/* and /api/export/*. CONTRACT ONLY.
+//
+// Plan §4 originally specified client/server streaming for these, but the
+// expected payload size (a few thousand hardware items for a personal
+// inventory) fits comfortably in a single message. Unary RPCs with `bytes`
+// payloads keep both server and client implementations simple. If a future
+// deployment outgrows that, we can add streaming variants alongside.
+// -----------------------------------------------------------------------------
+
+service ImportExportService {
+  rpc ExportJson(google.protobuf.Empty) returns (ExportBlobResponse);
+  rpc ExportCsv(ExportCsvRequest) returns (ExportBlobResponse);
+  rpc ImportJson(ImportJsonRequest) returns (ImportResult);
+  rpc ImportCsv(ImportCsvRequest) returns (ImportResult);
+}
+
+message ExportCsvRequest {
+  ImportExportEntity entity = 1;
+}
+
+message ExportBlobResponse {
+  bytes content = 1;
+  string content_type = 2;
+  string file_name = 3;
+}
+
+message ImportJsonRequest {
+  bytes content = 1;
+}
+
+message ImportCsvRequest {
+  ImportExportEntity entity = 1;
+  bytes content = 2;
+}
+
+message ImportResult {
+  int32 inserted = 1;
+  int32 updated = 2;
+  int32 skipped = 3;
+  repeated string warnings = 4;
 }
