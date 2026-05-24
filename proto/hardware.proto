@@ -1,0 +1,15 @@
+syntax = "proto3";
+
+package hwinventory.v1;
+
+option csharp_namespace = "HwInventory.Api.Grpc";
+
+import "google/protobuf/empty.proto";
+
+service HealthService {
+  rpc Check(google.protobuf.Empty) returns (HealthResponse);
+}
+
+message HealthResponse {
+  string status = 1;
+}

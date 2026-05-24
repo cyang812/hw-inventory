@@ -1,0 +1,103 @@
+name: docker
+
+# Build and publish a multi-arch hw-inventory image to GHCR on every push to main,
+# on version tags (v*.*.*), and manually via the Actions UI.
+#
+# Image:   ghcr.io/<owner>/hw-inventory
+# Tags:    latest (main only), v*.*.* (on tag), sha-<7> (always)
+# Arches:  linux/amd64, linux/arm64
+
+on:
+  push:
+    branches: [main]
+    tags:     ["v*.*.*"]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "9.0.x"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Backend tests
+        working-directory: backend
+        run: dotnet test --nologo --verbosity minimal
+
+      - name: Frontend install
+        working-directory: frontend
+        run: npm ci --no-audit --no-fund
+
+      - name: Frontend typecheck + build
+        working-directory: frontend
+        run: npm run build
+
+      - name: Frontend tests
+        working-directory: frontend
+        run: npm test
+
+  build-and-push:
+    needs: test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up QEMU (for cross-arch final stage)
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm64
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Image metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=ref,event=branch
+            type=ref,event=pr
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=sha,prefix=sha-,format=short
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      - name: Build & push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          provenance: false

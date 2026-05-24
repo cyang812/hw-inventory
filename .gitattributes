@@ -1,0 +1,21 @@
+* text=auto eol=lf
+
+*.cs       text diff=csharp
+*.csproj   text
+*.sln      text eol=crlf
+*.proto    text
+*.md       text
+*.json     text
+*.yml      text
+*.yaml     text
+*.vue      text
+*.ts       text
+*.tsx      text
+
+*.png      binary
+*.jpg      binary
+*.jpeg     binary
+*.gif      binary
+*.ico      binary
+*.pdf      binary
+*.db       binary

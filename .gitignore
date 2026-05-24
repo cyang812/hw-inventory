@@ -1,0 +1,68 @@
+# Build results
+[Bb]in/
+[Oo]bj/
+[Oo]ut/
+[Ll]og/
+[Ll]ogs/
+
+# Visual Studio / Rider / VSCode
+.vs/
+.idea/
+.vscode/
+*.user
+*.suo
+*.userprefs
+*.swp
+
+# .NET
+*.nupkg
+*.snupkg
+project.lock.json
+project.fragment.lock.json
+artifacts/
+**/Properties/launchSettings.json
+
+# Test results
+[Tt]est[Rr]esult*/
+coverage*.xml
+coverage*.json
+*.coverage
+*.coveragexml
+
+# EF Core - keep migrations under source control, ignore local DB
+*.db
+*.db-journal
+*.db-shm
+*.db-wal
+hw_inventory.db
+
+# Node / Vue / Vite
+node_modules/
+dist/
+.dist/
+*.local
+.npm/
+.pnpm-store/
+.vite/
+
+# Generated OpenAPI
+frontend/src/types/api.d.ts
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Env
+.env
+.env.local
+.env.*.local
+
+# Local persistent state for docker-compose (bind mount target at repo root only)
+/data/
+
+# Local compose customizations (host-specific overrides)
+compose.override.yml
+docker-compose.override.yml
+
+# Attachments storage (local backend)
+attachments/

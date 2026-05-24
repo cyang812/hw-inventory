@@ -1,0 +1,57 @@
+name: hw-inventory
+
+# Single-image deployment. The API serves both the SPA and the REST/MCP surface
+# from one port; SQLite DB persists in ./data via a bind mount.
+#
+# To run:
+#   1. Copy .env.example to .env and fill in AUTH_TOKEN + GHCR_OWNER.
+#   2. docker compose pull && docker compose up -d
+#   3. Open http://<host>:${HOST_PORT}
+#
+# To build locally instead of pulling from GHCR, create compose.override.yml:
+#   services:
+#     app:
+#       build: .
+
+services:
+  app:
+    image: ghcr.io/${GHCR_OWNER:-changeme}/hw-inventory:${IMAGE_TAG:-latest}
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      # Keep the container-internal port stable; HOST_PORT controls the LAN-facing one.
+      BIND_ADDRESS: http://0.0.0.0:5080
+      DATABASE_URL: "Data Source=/data/hw_inventory.db"
+    ports:
+      - "${HOST_PORT:-8080}:5080"
+    volumes:
+      - ./data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:5080/api/health"]
+      interval: 30s
+      timeout: 5s
+      start_period: 20s
+      retries: 3
+
+# Optional Postgres profile for the day a single SQLite writer is no longer enough.
+# Enable with:  docker compose --profile postgres up -d
+# Then point the app at it by setting DATABASE_URL in .env to the Npgsql conn string.
+  db:
+    image: postgres:16-alpine
+    profiles: ["postgres"]
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: hwinventory
+      POSTGRES_USER: hwinventory
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-hwinventory}
+    volumes:
+      - hw_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U hwinventory -d hwinventory"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+volumes:
+  hw_pgdata:
